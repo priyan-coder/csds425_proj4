@@ -1,11 +1,11 @@
-CFLAGS=-g -Wall -Werror
+CC = g++
+CFLAGS=-g -Wall -Werror 
+TARGET=proj4
 
-TARGETS=proj4
-
-all: $(TARGETS)
-
+all: $(TARGET).cpp
+	$(CC) -std=c++11 $(TARGET).cpp $(CFLAGS) -o $(TARGET)
 clean:
-	rm -f $(TARGETS) 
+	rm -f $(TARGET) 
 	rm -rf *.dSYM
 
 
