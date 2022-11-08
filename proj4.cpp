@@ -1,5 +1,6 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <math.h>
 #include <net/ethernet.h>
 #include <netdb.h>
 #include <netinet/in.h>
@@ -25,6 +26,7 @@
 #define REQUIRED_ARGC 4
 #define MANDATORY_ERR "Mandatory args missing!\n"
 #define MODE_ERR "Invalid mode selection!\n"
+#define IO_ERR "Unable to create a file descriptor to read trace_file given\n"
 #define ERROR 1
 #define SUCCESS 0
 using namespace std;
@@ -62,8 +64,9 @@ unsigned short next_packet(int fd, struct pkt_info *pinfo) {
         errexit((char *)"cannot read meta information");
     pinfo->caplen = ntohs(meta.caplen);
     /* set pinfo->now based on meta.secs & meta.usecs */
-    if (pinfo->caplen == 0)
-        return (1);
+    printf("secs: %u usecs: %u\n", meta.secs, meta.usecs);
+    pinfo->now = (double)meta.secs + (double)(meta.usecs / pow(10, to_string(meta.usecs).length()));
+    if (pinfo->caplen == 0) return (1);
     if (pinfo->caplen > MAX_PKT_SIZE)
         errexit((char *)"packet too big");
     /* read the packet contents */
@@ -92,6 +95,39 @@ unsigned short next_packet(int fd, struct pkt_info *pinfo) {
     return (1);
 }
 
+void handle_summary_mode(char *trace_file_path) {
+    int total_number_of_pkts = 0;
+    int num_of_ip_pkts = 0;
+    double first_time = 0;
+    double last_time = 0;
+    struct pkt_info packet;
+    int fd = open(trace_file_path, O_RDONLY);
+
+    if (fd == -1) {
+        errexit((char *)IO_ERR);
+    }
+
+    while (1) {
+        if (next_packet(fd, &packet)) {
+            if (first_time == 0) {
+                first_time = packet.now;
+            }
+            last_time = packet.now;
+            if (packet.ethh->ether_type == ETHERTYPE_IP) {
+                num_of_ip_pkts += 1;
+            }
+            total_number_of_pkts += 1;
+        } else {
+            break;
+        }
+    }
+
+    printf("FIRST PKT: %0.6f\n", first_time);
+    printf("LAST PKT: %0.6f\n", last_time);
+    printf("TOTAL PACKETS: %d\n", total_number_of_pkts);
+    printf("IP PACKETS: %d\n", num_of_ip_pkts);
+}
+
 int main(int argc, char *argv[]) {
     int opt;
     char *trace_file_path;
@@ -100,6 +136,7 @@ int main(int argc, char *argv[]) {
                                false,   // IS_LENGTH_MODE
                                false,   // IS_PACKET_PRINTING_MODE
                                false};  // IS_TRAFFIC_MATRIX_MODE
+    // unordered_map<string, pkt_info> tcp_pkts;  // only to hold TCP packets for the matrix mode
 
     /* There should only be 4 elements in argv, without which we terminate the program execution. */
     if (argc != REQUIRED_ARGC) {
@@ -152,7 +189,14 @@ int main(int argc, char *argv[]) {
         usage(argv[0]);
     }
 
-    for (auto i : trace_mode)
-        cout << i << ' ';
-    cout << trace_file_path << endl;
+    if (trace_mode[0]) {
+        handle_summary_mode(trace_file_path);
+    } else if (trace_mode[1]) {
+        // handle_length_mode();
+    } else if (trace_mode[2]) {
+        // handle_packet_printing_mode();
+    } else {
+        // handle_traffic_matrix_mode();
+    }
+    return SUCCESS;
 }
