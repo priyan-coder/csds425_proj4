@@ -1,8 +1,6 @@
-#include <arpa/inet.h>
 #include <fcntl.h>
 #include <math.h>
 #include <net/ethernet.h>
-#include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/ip.h>
 #include <netinet/tcp.h>
@@ -11,19 +9,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <iomanip>
 #include <iostream>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
 #include "next.h"
 #include "stdbool.h"
 
+#define TCP_PROTOCOL_NUMBER 6
+#define UDP_PROTOCOL_NUMBER 17
+#define HEADER_LEN_SCALING_FACTOR 4
 #define REQUIRED_ARGC 4
+#define UDP_HEADER_SIZE_BYTES 8
 #define MANDATORY_ERR "Mandatory args missing!\n"
 #define MODE_ERR "Invalid mode selection!\n"
 #define IO_ERR "Unable to create a file descriptor to read trace_file given\n"
@@ -51,7 +54,7 @@ int usage(char *progname) {
  */
 unsigned short next_packet(int fd, struct pkt_info *pinfo) {
     struct meta_info meta;
-    int bytes_read;
+    long unsigned int bytes_read;
 
     memset(pinfo, 0x0, sizeof(struct pkt_info));
     memset(&meta, 0x0, sizeof(struct meta_info));
@@ -64,9 +67,9 @@ unsigned short next_packet(int fd, struct pkt_info *pinfo) {
         errexit((char *)"cannot read meta information");
     pinfo->caplen = ntohs(meta.caplen);
     /* set pinfo->now based on meta.secs & meta.usecs */
-    printf("secs: %u usecs: %u\n", meta.secs, meta.usecs);
-    pinfo->now = (double)meta.secs + (double)(meta.usecs / pow(10, to_string(meta.usecs).length()));
-    if (pinfo->caplen == 0) return (1);
+    pinfo->now = (double)(ntohl(meta.secs)) + (double)((double)(ntohl(meta.usecs)) / (double)(pow(10, 6)));
+    if (pinfo->caplen == 0)
+        return (1);
     if (pinfo->caplen > MAX_PKT_SIZE)
         errexit((char *)"packet too big");
     /* read the packet contents */
@@ -86,12 +89,19 @@ unsigned short next_packet(int fd, struct pkt_info *pinfo) {
         /* we don't have anything beyond the ethernet header to process */
         return (1);
     /* set pinfo->iph to start of IP header */
+    pinfo->iph = (struct iphdr *)(pinfo->pkt + sizeof(struct ether_header));
+    int iphdr_size = (pinfo->iph->ihl) * 4;
     /* if TCP packet,
           set pinfo->tcph to the start of the TCP header
           setup values in pinfo->tcph, as needed */
     /* if UDP packet,
           set pinfo->udph to the start of the UDP header,
           setup values in pinfo->udph, as needed */
+    if (pinfo->iph->protocol == 6) {
+        pinfo->tcph = (struct tcphdr *)(pinfo->pkt + iphdr_size + sizeof(struct ether_header));
+    } else if (pinfo->iph->protocol == 17) {
+        pinfo->udph = (struct udphdr *)(pinfo->pkt + iphdr_size + sizeof(struct ether_header));
+    }
     return (1);
 }
 
@@ -121,11 +131,83 @@ void handle_summary_mode(char *trace_file_path) {
             break;
         }
     }
-
     printf("FIRST PKT: %0.6f\n", first_time);
     printf("LAST PKT: %0.6f\n", last_time);
     printf("TOTAL PACKETS: %d\n", total_number_of_pkts);
     printf("IP PACKETS: %d\n", num_of_ip_pkts);
+}
+
+void handle_length_mode(char *trace_file_path) {
+    int fd = open(trace_file_path, O_RDONLY);
+    struct pkt_info packet;
+
+    if (fd == -1) {
+        errexit((char *)IO_ERR);
+    }
+
+    while (1) {
+        double ts = 0.0;            // timestamp
+        unsigned short caplen = 0;  // from meta information
+        string ip_len;              // total length of IPV4 packet
+        string iphl;                // IPV4 packet header length
+        string transport;           // T for TCP, U for UDP, ? for others and  - for no IP hdr
+        string transport_hl;
+        string payload_len;
+        if (next_packet(fd, &packet)) {
+            // only if ethh present and is an IPV4 pkt, we print a single line of output for each IPV4 packet
+            if ((packet.ethh) && (packet.ethh->ether_type == ETHERTYPE_IP)) {
+                ts = packet.now;
+                caplen = packet.caplen;
+                // only if IP header is present
+                if (packet.iph) {
+                    ip_len = to_string(ntohs(packet.iph->tot_len));  // total length of IPV4 packet
+                    iphl = to_string((packet.iph->ihl) * 4);         // IPV4 packet header length
+                    // TCP transport protocol
+                    if (packet.iph->protocol == TCP_PROTOCOL_NUMBER) {
+                        transport = "T";  // T for TCP
+                        // if tcp header is present, grab header length
+                        if (packet.tcph) {
+                            transport_hl = to_string((packet.tcph->th_off) * HEADER_LEN_SCALING_FACTOR);
+                            payload_len = to_string(stoi(ip_len) - stoi(iphl) - stoi(transport_hl));
+                        } else {
+                            transport_hl = "-";  // TCP header not included in the packet trace
+                            payload_len = "-";
+                        }
+                    }
+                    // UDP transport protocol
+                    else if (packet.iph->protocol == UDP_PROTOCOL_NUMBER) {
+                        transport = "U";  // U for UDP
+                        if (packet.udph) {
+                            transport_hl = to_string(UDP_HEADER_SIZE_BYTES);
+                            payload_len = to_string(stoi(ip_len) - stoi(iphl) - stoi(transport_hl));
+                        } else {
+                            transport_hl = "-";  // UDP header not included in the packet trace
+                            payload_len = "-";
+                        }
+                    } else {
+                        transport = "?";     // ? for other protocols
+                        transport_hl = "?";  // ? for size of transport header by other protocols besides TCP and UDP
+                        payload_len = "?";   // ? for other protocols
+                    }
+                } else {
+                    // if IP header is not present
+                    ip_len = "-";        // IPV4 packet header length
+                    iphl = "-";          // IPV4 packet header length
+                    transport = "-";     // protocol will be - for no IP hdr
+                    transport_hl = "-";  // transport header length cannot be determined since IPV4 header is not included
+                    payload_len = "-";   // IPV4 header is not present, num of application payload bytes cannot be determined
+                }
+                cout << ts << " " << caplen << " " << ip_len << " " << iphl << " " << transport << " " << transport_hl << " " << payload_len << endl;
+                ip_len.clear();
+                iphl.clear();
+                transport.clear();
+                transport_hl.clear();
+                payload_len.clear();
+            }
+        } else {
+            break;
+        }
+    }
 }
 
 int main(int argc, char *argv[]) {
@@ -183,20 +265,20 @@ int main(int argc, char *argv[]) {
     }
 
     /* Ensure that only one of the mode is selected */
-    int number_of_modes_selected = count(trace_mode.begin(), trace_mode.end(), true);
-    if (number_of_modes_selected != 1) {
-        printf(MODE_ERR);
-        usage(argv[0]);
-    }
+    // int number_of_modes_selected = count(trace_mode.begin(), trace_mode.end(), true);
+    // if (number_of_modes_selected != 1) {
+    //     printf(MODE_ERR);
+    //     usage(argv[0]);
+    // }
 
+    cout << setprecision(6) << fixed;
     if (trace_mode[0]) {
         handle_summary_mode(trace_file_path);
     } else if (trace_mode[1]) {
-        // handle_length_mode();
+        handle_length_mode(trace_file_path);
     } else if (trace_mode[2]) {
         // handle_packet_printing_mode();
     } else {
         // handle_traffic_matrix_mode();
     }
-    return SUCCESS;
 }
