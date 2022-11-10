@@ -166,7 +166,7 @@ void handle_length_mode(char *trace_file_path) {
                     if (packet.iph->protocol == TCP_PROTOCOL_NUMBER) {
                         transport = "T";  // T for TCP
                         // if tcp header is present, grab header length
-                        if (packet.tcph) {
+                        if (packet.tcph->source) {
                             transport_hl = to_string((packet.tcph->th_off) * HEADER_LEN_SCALING_FACTOR);
                             payload_len = to_string(stoi(ip_len) - stoi(iphl) - stoi(transport_hl));
                         } else {
@@ -177,7 +177,7 @@ void handle_length_mode(char *trace_file_path) {
                     // UDP transport protocol
                     else if (packet.iph->protocol == UDP_PROTOCOL_NUMBER) {
                         transport = "U";  // U for UDP
-                        if (packet.udph) {
+                        if (packet.udph->source) {
                             transport_hl = to_string(UDP_HEADER_SIZE_BYTES);
                             payload_len = to_string(stoi(ip_len) - stoi(iphl) - stoi(transport_hl));
                         } else {
@@ -203,6 +203,63 @@ void handle_length_mode(char *trace_file_path) {
                 transport.clear();
                 transport_hl.clear();
                 payload_len.clear();
+            }
+        } else {
+            break;
+        }
+    }
+}
+
+string convert_to_dec_str(uint32_t address) {
+    unsigned char bytes[4];
+    bytes[0] = address & 0xFF;
+    bytes[1] = (address >> 8) & 0xFF;
+    bytes[2] = (address >> 16) & 0xFF;
+    bytes[3] = (address >> 24) & 0xFF;
+    return to_string(bytes[3]) + "." + to_string(bytes[2]) + "." + to_string(bytes[1]) + "." + to_string(bytes[0]);
+}
+
+void handle_packet_printing_mode(char *trace_file_path) {
+    int fd = open(trace_file_path, O_RDONLY);
+    struct pkt_info packet;
+
+    if (fd == -1) {
+        errexit((char *)IO_ERR);
+    }
+
+    while (1) {
+        double ts = 0.0;  // timestamp
+        string src_ip;    // dotted-quad version of the source IPV4 address
+        string dst_ip;    // dotted-quad version of the destination IPV4 address
+        string ip_ttl;    // IPV4's ttl field
+        string src_port;  // TCP's source port number
+        string dst_port;  // TCP's destination port number
+        string window;    // TCP's advertised window field
+        string seqno;     // TCP's sequence number field
+        string ackno;     // TCP's ack number field in ACK packets --> check flags field to ensure that ACK bit is set to 1
+        if (next_packet(fd, &packet)) {
+            // Ensuring IPV4 in ethh
+            if ((packet.ethh) && (packet.ethh->ether_type == ETHERTYPE_IP)) {
+                // protocol is explicitly indicated as TCP
+                if ((packet.iph) && (packet.iph->protocol == TCP_PROTOCOL_NUMBER)) {
+                    // TCP header is present in packet
+                    if (packet.tcph->source) {
+                        ts = packet.now;
+                        src_ip = convert_to_dec_str(ntohl(packet.iph->saddr));
+                        dst_ip = convert_to_dec_str(ntohl(packet.iph->daddr));
+                        ip_ttl = to_string(packet.iph->ttl);
+                        src_port = to_string(ntohs(packet.tcph->th_sport));
+                        dst_port = to_string(ntohs(packet.tcph->th_dport));
+                        window = to_string(ntohs(packet.tcph->th_win));
+                        seqno = to_string(ntohl(packet.tcph->th_seq));
+                        if (packet.tcph->ack) {
+                            ackno = to_string(ntohl(packet.tcph->th_ack));
+                        } else {
+                            ackno = "-";
+                        }
+                        cout << ts << " " << src_ip << " " << dst_ip << " " << ip_ttl << " " << src_port << " " << dst_port << " " << window << " " << seqno << " " << ackno << endl;
+                    }
+                }
             }
         } else {
             break;
@@ -277,7 +334,7 @@ int main(int argc, char *argv[]) {
     } else if (trace_mode[1]) {
         handle_length_mode(trace_file_path);
     } else if (trace_mode[2]) {
-        // handle_packet_printing_mode();
+        handle_packet_printing_mode(trace_file_path);
     } else {
         // handle_traffic_matrix_mode();
     }
