@@ -7,6 +7,6 @@ all: $(TARGET).cpp
 clean:
 	rm -f $(TARGET) 
 	rm -rf *.dSYM
-
+	rm -rf *.out
 
 distclean: clean

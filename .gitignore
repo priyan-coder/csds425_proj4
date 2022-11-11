@@ -6,3 +6,4 @@ udp.h
 ip.h
 ethernet.h
 .DS_Store
+*.tar.gz

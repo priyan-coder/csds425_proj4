@@ -1,3 +1,10 @@
+/* Name: BALASHANMUGA PRIYAN RAJAMOHAN
+ * Case ID: bxr261
+ * Filename: proj4.cpp
+ * Date created: 11 Nov 2022
+ * Description: The following code is used to read and analyze packet traces.
+ */
+
 #include <fcntl.h>
 #include <math.h>
 #include <net/ethernet.h>
@@ -13,6 +20,7 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <iomanip>
 #include <iostream>
 #include <string>
@@ -34,6 +42,7 @@
 #define SUCCESS 0
 using namespace std;
 
+/* Prints an error message and exits the program */
 void errexit(char *msg) {
     fprintf(stdout, "%s\n", msg);
     exit(ERROR);
@@ -90,21 +99,22 @@ unsigned short next_packet(int fd, struct pkt_info *pinfo) {
         return (1);
     /* set pinfo->iph to start of IP header */
     pinfo->iph = (struct iphdr *)(pinfo->pkt + sizeof(struct ether_header));
-    int iphdr_size = (pinfo->iph->ihl) * 4;
+    int iphdr_size = (pinfo->iph->ihl) * HEADER_LEN_SCALING_FACTOR;
     /* if TCP packet,
           set pinfo->tcph to the start of the TCP header
           setup values in pinfo->tcph, as needed */
     /* if UDP packet,
           set pinfo->udph to the start of the UDP header,
           setup values in pinfo->udph, as needed */
-    if (pinfo->iph->protocol == 6) {
+    if (pinfo->iph->protocol == TCP_PROTOCOL_NUMBER) {
         pinfo->tcph = (struct tcphdr *)(pinfo->pkt + iphdr_size + sizeof(struct ether_header));
-    } else if (pinfo->iph->protocol == 17) {
+    } else if (pinfo->iph->protocol == UDP_PROTOCOL_NUMBER) {
         pinfo->udph = (struct udphdr *)(pinfo->pkt + iphdr_size + sizeof(struct ether_header));
     }
     return (1);
 }
 
+/* Summary mode prints timestamps and counts of packets */
 void handle_summary_mode(char *trace_file_path) {
     int total_number_of_pkts = 0;
     int num_of_ip_pkts = 0;
@@ -137,6 +147,7 @@ void handle_summary_mode(char *trace_file_path) {
     printf("IP PACKETS: %d\n", num_of_ip_pkts);
 }
 
+/* Length mode prints detailed information about each packet observed */
 void handle_length_mode(char *trace_file_path) {
     int fd = open(trace_file_path, O_RDONLY);
     struct pkt_info packet;
@@ -160,8 +171,8 @@ void handle_length_mode(char *trace_file_path) {
                 caplen = packet.caplen;
                 // only if IP header is present
                 if (packet.iph) {
-                    ip_len = to_string(ntohs(packet.iph->tot_len));  // total length of IPV4 packet
-                    iphl = to_string((packet.iph->ihl) * 4);         // IPV4 packet header length
+                    ip_len = to_string(ntohs(packet.iph->tot_len));                   // total length of IPV4 packet
+                    iphl = to_string((packet.iph->ihl) * HEADER_LEN_SCALING_FACTOR);  // IPV4 packet header length
                     // TCP transport protocol
                     if (packet.iph->protocol == TCP_PROTOCOL_NUMBER) {
                         transport = "T";  // T for TCP
@@ -198,11 +209,6 @@ void handle_length_mode(char *trace_file_path) {
                     payload_len = "-";   // IPV4 header is not present, num of application payload bytes cannot be determined
                 }
                 cout << ts << " " << caplen << " " << ip_len << " " << iphl << " " << transport << " " << transport_hl << " " << payload_len << endl;
-                ip_len.clear();
-                iphl.clear();
-                transport.clear();
-                transport_hl.clear();
-                payload_len.clear();
             }
         } else {
             break;
@@ -210,6 +216,7 @@ void handle_length_mode(char *trace_file_path) {
     }
 }
 
+/* Converts given IP address into dotted decimal representation */
 string convert_to_dec_str(uint32_t address) {
     unsigned char bytes[4];
     bytes[0] = address & 0xFF;
@@ -219,6 +226,7 @@ string convert_to_dec_str(uint32_t address) {
     return to_string(bytes[3]) + "." + to_string(bytes[2]) + "." + to_string(bytes[1]) + "." + to_string(bytes[0]);
 }
 
+/* Packet printing mode only analyses TCP packets in the trace */
 void handle_packet_printing_mode(char *trace_file_path) {
     int fd = open(trace_file_path, O_RDONLY);
     struct pkt_info packet;
@@ -267,6 +275,57 @@ void handle_packet_printing_mode(char *trace_file_path) {
     }
 }
 
+/* Traffic matrix mode gives an overview of the payload exchanged between hosts communicating using TCP */
+void handle_traffic_matrix_mode(char *trace_file_path) {
+    int fd = open(trace_file_path, O_RDONLY);
+    struct pkt_info packet;
+    unordered_map<string, string> tcp_pkts;  // only to hold TCP packets for the matrix mode
+
+    if (fd == -1) {
+        errexit((char *)IO_ERR);
+    }
+
+    while (1) {
+        string ip_len;  // total length of IPV4 packet
+        string iphl;    // IPV4 packet header length
+        string transport_hl;
+        string payload_len;
+        string src_ip;  // dotted-quad version of the source IPV4 address
+        string dst_ip;  // dotted-quad version of the destination IPV4 address
+        string key;
+        if (next_packet(fd, &packet)) {
+            // Ensuring IPV4 in ethh
+            if ((packet.ethh) && (packet.ethh->ether_type == ETHERTYPE_IP)) {
+                // protocol is explicitly indicated as TCP
+                if ((packet.iph) && (packet.iph->protocol == TCP_PROTOCOL_NUMBER)) {
+                    // TCP header is present in packet
+                    if (packet.tcph->source) {
+                        ip_len = to_string(ntohs(packet.iph->tot_len));                   // total length of IPV4 packet
+                        iphl = to_string((packet.iph->ihl) * HEADER_LEN_SCALING_FACTOR);  // IPV4 packet header length
+                        transport_hl = to_string((packet.tcph->th_off) * HEADER_LEN_SCALING_FACTOR);
+                        payload_len = to_string(stoi(ip_len) - stoi(iphl) - stoi(transport_hl));
+                        src_ip = convert_to_dec_str(ntohl(packet.iph->saddr));
+                        dst_ip = convert_to_dec_str(ntohl(packet.iph->daddr));
+                        key = src_ip + " " + dst_ip;
+                        if (tcp_pkts.find(key) != tcp_pkts.end()) {
+                            // key already exists
+                            tcp_pkts[key] = to_string(stoi(tcp_pkts[key]) + stoi(payload_len));
+                        } else {
+                            // key doesn't exist
+                            tcp_pkts[key] = payload_len;
+                        }
+                    }
+                }
+            }
+        } else {
+            for (const auto &traffic : tcp_pkts) {
+                cout << traffic.first << " " << traffic.second << endl;
+            }
+            break;
+        }
+    }
+}
+
 int main(int argc, char *argv[]) {
     int opt;
     char *trace_file_path;
@@ -275,7 +334,6 @@ int main(int argc, char *argv[]) {
                                false,   // IS_LENGTH_MODE
                                false,   // IS_PACKET_PRINTING_MODE
                                false};  // IS_TRAFFIC_MATRIX_MODE
-    // unordered_map<string, pkt_info> tcp_pkts;  // only to hold TCP packets for the matrix mode
 
     /* There should only be 4 elements in argv, without which we terminate the program execution. */
     if (argc != REQUIRED_ARGC) {
@@ -322,11 +380,11 @@ int main(int argc, char *argv[]) {
     }
 
     /* Ensure that only one of the mode is selected */
-    // int number_of_modes_selected = count(trace_mode.begin(), trace_mode.end(), true);
-    // if (number_of_modes_selected != 1) {
-    //     printf(MODE_ERR);
-    //     usage(argv[0]);
-    // }
+    int number_of_modes_selected = count(trace_mode.begin(), trace_mode.end(), true);
+    if (number_of_modes_selected != 1) {
+        printf(MODE_ERR);
+        usage(argv[0]);
+    }
 
     cout << setprecision(6) << fixed;
     if (trace_mode[0]) {
@@ -336,6 +394,7 @@ int main(int argc, char *argv[]) {
     } else if (trace_mode[2]) {
         handle_packet_printing_mode(trace_file_path);
     } else {
-        // handle_traffic_matrix_mode();
+        handle_traffic_matrix_mode(trace_file_path);
     }
+    return SUCCESS;
 }
