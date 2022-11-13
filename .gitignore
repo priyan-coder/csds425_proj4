@@ -7,3 +7,6 @@ ip.h
 ethernet.h
 .DS_Store
 *.tar.gz
+425outs/
+*.png
+*.ipynb
